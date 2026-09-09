@@ -5,11 +5,11 @@ A Team Charter defines your goals and documents your team's overall agreements r
 
 Each team member should list two of their strengths and two of their weaknesses to help better understand and support each other. 
 
-|  | Name:Eldon Whiteley | Name: Dylan Bjorum | Name:Gail Kinder |
+|  | Name: Eldon Whiteley | Name: Dylan Bjorum | Name: Gail Kinder |
 | :---- | :---- | :---- | :---- |
 | Email | eldonwhiteley@u.boisestate.edu | Dylanbjorum@u.boisestate.edu | Gailkinder@u.boisestate.edu |
-| Strengths | Coding \- C++, Python.Documentation. Data Structures. Computer Systems. | Digital/Analog circuit design. Signal Processing. | Digital Circuit Design/ Embedded Systems Data Structures/Computer Architecture |
-| Weaknesses | RTL.  Circuits.Machine Learning. | Coding. Machine Learning. Data Structures. | Coding (especially speed, I’m slow) Signal processing |
+| Strengths | Coding \- C++, Python. Documentation. Data Structures. Computer Systems. | Digital/Analog circuit design. Signal Processing. | Digital Circuit Design/ Embedded Systems Data Structures/Computer Architecture |
+| Weaknesses | RTL.  Circuits. Machine Learning. | Coding. Machine Learning. Data Structures. | Coding (especially speed, I’m slow) Signal processing |
 
 What are your **Core Values**? Discuss which shared values can help guide how you approach your work and how you collaborate with each other. Once you have discussed a broad range of core values, consolidate them into 3-4 primary values and list/define them below.
 
