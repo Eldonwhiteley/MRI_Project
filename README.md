@@ -55,6 +55,19 @@ You can set up your local development environment using **Conda** (recommended) 
 
 ---
 
+## Dataset Setup & Extraction
+
+Because the raw dataset is ~33 GB, **data files and archives are excluded from Git via `.gitignore`** (GitHub enforces a strict 100 MB per-file limit).
+
+To extract the dataset archives (`train-shifted.tar.gz` and `valid-shifted.tar.gz`):
+```bash
+python src/setup_data.py
+```
+* `setup_data.py` will search `Downloads/`, the repository root, or `data/` for the archives, extract them into `data/train-shifted` and `data/valid-shifted`, flatten redundant nesting, and clean any macOS `._*` metadata files.
+* Alternatively, opening the notebook [`src/HDF5_Viewing.ipynb`](src/HDF5_Viewing.ipynb) will automatically invoke the extraction step if `data/` is not yet populated.
+
+---
+
 ## Dataset Overview
 
 The dataset consists of 3D knee MRI scans from the Osteoarthritis Initiative (OAI) stored as HDF5 containers:
