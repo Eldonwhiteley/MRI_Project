@@ -1,0 +1,22 @@
+# Virtual environments
+.venv/
+*.venv*
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# macOS metadata files
+._*
+.DS_Store
+
+# Datasets and large archives (excluded from Git)
+data/
+*.im
+*.seg
+*.tar
+*.tar.gz
+*.tgz
+*.zip
