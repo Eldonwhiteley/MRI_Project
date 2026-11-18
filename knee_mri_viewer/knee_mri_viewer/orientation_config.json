@@ -1,0 +1,16 @@
+{
+  "_comment": "Optional. Loaded automatically if this file is in the folder you start the viewer from. 'file axis' = axis of the array as stored in the file. The values below are a STARTING GUESS (sagittal-acquired knee, axis0=S-I, axis1=A-P, axis2=L-R, spacing typical for OAI DESS). Verify them in the viewer.",
+  "axis_sagittal": 2,
+  "axis_coronal": 1,
+  "axis_transverse": 0,
+  "flip_sagittal": false,
+  "flip_coronal": false,
+  "flip_transverse": false,
+  "spacing_mm": [0.3646, 0.3646, 0.7],
+  "views": [
+    {"transpose": false, "rot90": 0, "flip_h": false, "flip_v": false},
+    {"transpose": false, "rot90": 0, "flip_h": false, "flip_v": false},
+    {"transpose": false, "rot90": 0, "flip_h": false, "flip_v": false}
+  ],
+  "channel_names": null
+}
