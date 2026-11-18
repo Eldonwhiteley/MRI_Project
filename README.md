@@ -59,30 +59,31 @@ You can set up your local development environment using **Conda** (recommended) 
 
 Because the raw dataset is ~33 GB, **data files and archives are excluded from Git via `.gitignore`** (GitHub enforces a strict 100 MB per-file limit).
 
-To extract the dataset archives (`train-shifted.tar.gz` and `valid-shifted.tar.gz`):
+To extract the dataset archives (`train-shifted.tar.gz`, `valid-shifted.tar.gz`, and `test-ground-truth-shifted.zip`):
 ```bash
 python src/setup_data.py
 ```
-* `setup_data.py` will search `Downloads/`, the repository root, or `data/` for the archives, extract them into `data/train-shifted` and `data/valid-shifted`, flatten redundant nesting, and clean any macOS `._*` metadata files.
+* `setup_data.py` will search `Downloads/`, the repository root, or `data/` for the archives, extract them into `data/train-shifted`, `data/valid-shifted`, and `data/ground-truth_shifted`, flatten redundant nesting, and clean any macOS `._*` metadata files and `__MACOSX` folders.
 * Alternatively, opening the notebook [`src/HDF5_Viewing.ipynb`](src/HDF5_Viewing.ipynb) will automatically invoke the extraction step if `data/` is not yet populated.
 
 ---
 
 ## Dataset Overview
 
-The dataset consists of 3D knee MRI scans from the Osteoarthritis Initiative (OAI) stored as HDF5 containers:
+The dataset consists of 3D knee MRI scans and segmentation masks from the Osteoarthritis Initiative (OAI):
 
-* **`.im` files:** Original 3D MRI volumes with shape `(384, 384, 160)` of `float32` intensities.
-* **`.seg` files:** 3D multi-channel segmentation masks with shape `(384, 384, 160, 6)` of `uint8` binary values (`0` or `1`).
-* **Dataset Key:** In both files, array data is stored under the HDF5 key `"/data"`.
+* **`.im` files (HDF5):** Original 3D MRI volumes with shape `(384, 384, 160)` of `float32` intensities.
+* **`.seg` files (HDF5):** 3D 6-channel segmentation masks with shape `(384, 384, 160, 6)` of `uint8` binary values (`0` or `1`).
+* **`.npy` files (NumPy):** 3D 4-channel test ground truth cartilage segmentation masks (`data/ground-truth_shifted`) with shape `(384, 384, 160, 4)` of `uint8` binary values (`0` or `1`).
+* **Dataset Key:** In HDF5 containers (`.im` and `.seg`), array data is stored under the key `"/data"`.
 
 ### Segmentation Channels:
 * **Channel 0:** Femoral Cartilage
 * **Channel 1:** Lateral Tibial Cartilage
 * **Channel 2:** Medial Tibial Cartilage
 * **Channel 3:** Patellar Cartilage
-* **Channel 4:** Lateral Meniscus
-* **Channel 5:** Medial Meniscus
+* **Channel 4:** Lateral Meniscus *(Train & Validation only)*
+* **Channel 5:** Medial Meniscus *(Train & Validation only)*
 
 ---
 
@@ -90,29 +91,28 @@ The dataset consists of 3D knee MRI scans from the Osteoarthritis Initiative (OA
 
 ### 1. Interactive Jupyter Notebook
 Open [`src/HDF5_Viewing.ipynb`](src/HDF5_Viewing.ipynb) in JupyterLab, VS Code, or Google Colab:
-* Includes an interactive slice slider (`ipywidgets`) to scrub through all 160 slices in real time.
-* Displays composite multi-color overlays and individual tissue breakdowns.
+* **Part I:** View HDF5 paired volumes (`.im` and `.seg`), composite overlays, and individual tissue breakdowns.
+* **Part II:** View extracted test ground truth masks (`.npy`) across all 4 cartilage channels.
+* Includes interactive slice sliders (`ipywidgets`) to scrub through all 160 slices in real time.
 * Includes orthogonal planar reslicing (Sagittal, Coronal, Axial).
 
 ### 2. Using `HDF5View` in Python Scripts
-You can use the [`HDF5View`](src/hdf5_view.py) class in your own code:
+You can use the [`HDF5View`](src/hdf5_view.py) class (and `GroundTruthView`) in your own code:
 
 ```python
-from src.hdf5_view import HDF5View
+from src.hdf5_view import HDF5View, GroundTruthView
 
-# 1. Automatically find matching (.im, .seg) file pairs
-pairs = HDF5View.find_pairs("data/train-shifted/train-shifted")
-sample_im, sample_seg = pairs[0]
-
-# 2. Initialize viewer
-viewer = HDF5View(sample_im, sample_seg)
-
-# 3. Static multi-panel plot of slice 95
+# --- Option A: View HDF5 paired volume (.im and .seg) ---
+pairs = HDF5View.find_pairs("data/train-shifted")
+viewer = HDF5View(pairs[0][0], pairs[0][1])
 viewer.plot_slice(slice_idx=95, alpha=0.55)
-
-# 4. Interactive slice scrubber (in notebook)
 viewer.interactive_viewer(default_slice=75)
-
-# 5. Orthogonal reslices (Sagittal, Coronal, Axial)
 viewer.plot_orthogonal()
+
+# --- Option B: View Ground Truth mask (.npy) ---
+gt_files = HDF5View.find_ground_truth("data/ground-truth_shifted")
+gt_viewer = HDF5View.from_npy(gt_files[0])
+gt_viewer.plot_slice(slice_idx=75)
+gt_viewer.interactive_viewer(default_slice=75)
+gt_viewer.plot_orthogonal()
 ```

@@ -9,6 +9,7 @@ import argparse
 import os
 import shutil
 import tarfile
+import zipfile
 from glob import glob
 from pathlib import Path
 from typing import List, Optional
@@ -60,6 +61,11 @@ def extract_archives(
     dest_path = Path(dest_dir).resolve()
     dest_path.mkdir(parents=True, exist_ok=True)
 
+    if clean_mac_meta:
+        macosx_dir = dest_path / "__MACOSX"
+        if macosx_dir.is_dir():
+            shutil.rmtree(macosx_dir, ignore_errors=True)
+
     search_dirs = [
         dest_path,
         Path(".").resolve(),
@@ -70,19 +76,34 @@ def extract_archives(
         search_dirs.insert(0, Path(archive_dir).resolve())
 
     targets = [
-        ("train-shifted", "train-shifted*.tar*"),
-        ("valid-shifted", "valid-shifted*.tar*"),
+        ("train-shifted", "train-shifted*.tar*", [".im", ".seg"]),
+        ("valid-shifted", "valid-shifted*.tar*", [".im", ".seg"]),
+        ("test-ground-truth-shifted", "test-ground-truth-shifted*.zip*", [".npy", ".im", ".seg"]),
     ]
 
-    for folder_name, pattern in targets:
-        target_folder = dest_path / folder_name
-        # Check if folder already contains .im files
-        existing_im = list(target_folder.glob("**/*.im")) if target_folder.is_dir() else []
-        # Filter out ._
-        existing_im = [f for f in existing_im if not f.name.startswith("._")]
+    for folder_name, pattern, valid_exts in targets:
+        # Check primary target directory as well as possible alternative archive folder names
+        candidate_folders = [dest_path / folder_name]
+        if folder_name == "test-ground-truth-shifted":
+            candidate_folders.append(dest_path / "ground-truth_shifted")
 
-        if existing_im:
-            print(f"[{folder_name}] Already extracted: found {len(existing_im)} .im files in {target_folder}")
+        target_folder = candidate_folders[0]
+        existing_data = []
+        for cand in candidate_folders:
+            if cand.is_dir():
+                found = [
+                    f for f in cand.glob("**/*")
+                    if f.suffix in valid_exts and not f.name.startswith("._")
+                ]
+                if found:
+                    target_folder = cand
+                    existing_data = found
+                    break
+
+        if existing_data:
+            print(f"[{folder_name}] Already extracted: found {len(existing_data)} data files in {target_folder}")
+            if clean_mac_meta and target_folder.is_dir():
+                clean_appledouble(target_folder)
             continue
 
         archive_file = find_archive(pattern, search_dirs)
@@ -94,28 +115,45 @@ def extract_archives(
 
         print(f"[{folder_name}] Extracting {archive_file.name} to {dest_path}...")
         try:
-            with tarfile.open(archive_file, "r:*") as tar:
-                tar.extractall(path=dest_path)
-            print(f"[{folder_name}] Extraction complete!")
+            if tarfile.is_tarfile(archive_file):
+                with tarfile.open(archive_file, "r:*") as tar:
+                    tar.extractall(path=dest_path)
+                print(f"[{folder_name}] Extraction complete!")
+            elif zipfile.is_zipfile(archive_file):
+                with zipfile.ZipFile(archive_file, "r") as zip:
+                    zip.extractall(path=dest_path)
+                print(f"[{folder_name}] Extraction complete!")
         except Exception as e:
             print(f"[{folder_name}] Error extracting {archive_file}: {e}")
 
+        # Check for extracted folder (may be named differently inside archive)
+        extracted_folder = target_folder
+        if not extracted_folder.is_dir() and folder_name == "test-ground-truth-shifted":
+            alt_folder = dest_path / "ground-truth_shifted"
+            if alt_folder.is_dir():
+                extracted_folder = alt_folder
+
         # Flatten any redundant nesting (e.g. data/train-shifted/train-shifted -> data/train-shifted)
-        nested = target_folder / folder_name
+        nested = extracted_folder / folder_name
         if nested.is_dir():
             for item in nested.iterdir():
-                dest_item = target_folder / item.name
+                dest_item = extracted_folder / item.name
                 if not dest_item.exists():
-                    shutil.move(str(item), str(target_folder))
+                    shutil.move(str(item), str(extracted_folder))
             try:
                 nested.rmdir()
             except OSError:
                 pass
 
-        if clean_mac_meta and target_folder.is_dir():
-            cleaned = clean_appledouble(target_folder)
-            if cleaned > 0:
-                print(f"[{folder_name}] Cleaned {cleaned} macOS AppleDouble metadata files.")
+        if clean_mac_meta:
+            # Clean macOS metadata and __MACOSX directories
+            macosx_dir = dest_path / "__MACOSX"
+            if macosx_dir.is_dir():
+                shutil.rmtree(macosx_dir, ignore_errors=True)
+            if extracted_folder.is_dir():
+                cleaned = clean_appledouble(extracted_folder)
+                if cleaned > 0:
+                    print(f"[{folder_name}] Cleaned {cleaned} macOS AppleDouble metadata files.")
 
     return True
 

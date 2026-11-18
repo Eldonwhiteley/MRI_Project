@@ -42,31 +42,40 @@ class HDF5View:
 
     def __init__(
         self,
-        im_path: str,
+        im_path: Optional[str] = None,
         seg_path: Optional[str] = None,
         dataset_key: str = "data",
         channel_labels: Optional[List[str]] = None,
         channel_colors: Optional[List[List[float]]] = None,
         preload: bool = False,
     ) -> None:
-        """Initialize the HDF5 viewer.
+        """Initialize the HDF5 / Ground Truth viewer.
 
         Args:
-            im_path: Path to the .im (image) HDF5 file.
-            seg_path: Optional path to the matching .seg (segmentation) HDF5 file.
+            im_path: Path to the .im (image) HDF5 file, or None if viewing segmentation alone.
+            seg_path: Optional path to .seg (HDF5) or .npy (NumPy) segmentation file.
             dataset_key: The HDF5 dataset name containing the array (default: "data").
             channel_labels: Optional list of channel label names for the segmentation mask.
             channel_colors: Optional list of RGB colors (0.0 to 1.0) for mask overlays.
             preload: If True, immediately load the entire 3D volume into RAM.
         """
-        if not os.path.isfile(im_path):
+        # If the user passed a .npy file as the first positional argument, treat it as seg_path
+        if im_path is not None and im_path.endswith(".npy") and seg_path is None:
+            seg_path = im_path
+            im_path = None
+
+        if im_path is None and seg_path is None:
+            raise ValueError("At least one of im_path or seg_path must be provided.")
+
+        if im_path is not None and not os.path.isfile(im_path):
             raise FileNotFoundError(f"Image file not found: {im_path}")
         if seg_path is not None and not os.path.isfile(seg_path):
             raise FileNotFoundError(f"Segmentation file not found: {seg_path}")
 
-        self.im_path: str = os.path.abspath(im_path)
+        self.im_path: Optional[str] = os.path.abspath(im_path) if im_path else None
         self.seg_path: Optional[str] = os.path.abspath(seg_path) if seg_path else None
         self.dataset_key: str = dataset_key
+        self.has_image: bool = self.im_path is not None
 
         self.channel_labels: List[str] = channel_labels or list(self.DEFAULT_CHANNEL_LABELS)
         self.channel_colors: List[List[float]] = channel_colors or list(self.DEFAULT_CHANNEL_COLORS)
@@ -75,26 +84,47 @@ class HDF5View:
         self._volume_im: Optional[np.ndarray] = None
         self._volume_seg: Optional[np.ndarray] = None
 
-        # Inspect basic metadata without loading full data
-        with h5py.File(self.im_path, "r") as f_im:
-            if self.dataset_key not in f_im:
-                raise KeyError(f"Dataset '{self.dataset_key}' not found in {im_path}. Available: {list(f_im.keys())}")
-            ds_im = f_im[self.dataset_key]
-            self.im_shape: Tuple[int, ...] = ds_im.shape
-            self.im_dtype: np.dtype = ds_im.dtype
-
+        # Inspect segmentation metadata if provided (.npy or HDF5)
         if self.seg_path is not None:
-            with h5py.File(self.seg_path, "r") as f_seg:
-                if self.dataset_key not in f_seg:
-                    raise KeyError(f"Dataset '{self.dataset_key}' not found in {seg_path}. Available: {list(f_seg.keys())}")
-                ds_seg = f_seg[self.dataset_key]
-                self.seg_shape: Optional[Tuple[int, ...]] = ds_seg.shape
-                self.seg_dtype: Optional[np.dtype] = ds_seg.dtype
-                self.num_channels: int = self.seg_shape[-1] if len(self.seg_shape) > 3 else 1
+            if self.seg_path.endswith(".npy"):
+                seg_mmap = np.load(self.seg_path, mmap_mode="r")
+                self.seg_shape: Optional[Tuple[int, ...]] = seg_mmap.shape
+                self.seg_dtype: Optional[np.dtype] = seg_mmap.dtype
+            else:
+                with h5py.File(self.seg_path, "r") as f_seg:
+                    if self.dataset_key not in f_seg:
+                        raise KeyError(f"Dataset '{self.dataset_key}' not found in {self.seg_path}. Available: {list(f_seg.keys())}")
+                    ds_seg = f_seg[self.dataset_key]
+                    self.seg_shape = ds_seg.shape
+                    self.seg_dtype = ds_seg.dtype
+
+            self.num_channels: int = self.seg_shape[-1] if len(self.seg_shape) > 3 else 1
+            # Adjust default labels if 4 channels (e.g. test ground truth cartilage masks)
+            if channel_labels is None and self.num_channels == 4:
+                self.channel_labels = list(self.DEFAULT_CHANNEL_LABELS[:4])
         else:
             self.seg_shape = None
             self.seg_dtype = None
             self.num_channels = 0
+
+        # Inspect image metadata if provided
+        if self.im_path is not None:
+            if self.im_path.endswith(".npy"):
+                im_mmap = np.load(self.im_path, mmap_mode="r")
+                self.im_shape: Tuple[int, ...] = im_mmap.shape
+                self.im_dtype: np.dtype = im_mmap.dtype
+            else:
+                with h5py.File(self.im_path, "r") as f_im:
+                    if self.dataset_key not in f_im:
+                        raise KeyError(f"Dataset '{self.dataset_key}' not found in {self.im_path}. Available: {list(f_im.keys())}")
+                    ds_im = f_im[self.dataset_key]
+                    self.im_shape = ds_im.shape
+                    self.im_dtype = ds_im.dtype
+        else:
+            # Mask-only mode: adopt spatial dimensions from segmentation volume
+            assert self.seg_shape is not None
+            self.im_shape = self.seg_shape[:3] if len(self.seg_shape) >= 3 else self.seg_shape
+            self.im_dtype = np.dtype(np.float32)
 
         # Number of slices along depth dimension (typically axis 2)
         self.num_slices: int = self.im_shape[2] if len(self.im_shape) >= 3 else self.im_shape[0]
@@ -109,11 +139,21 @@ class HDF5View:
     def load_volume(self) -> HDF5View:
         """Load the entire 3D image and segmentation volume into RAM."""
         if self._volume_im is None:
-            with h5py.File(self.im_path, "r") as f_im:
-                self._volume_im = f_im[self.dataset_key][:]
+            if self.im_path is not None:
+                if self.im_path.endswith(".npy"):
+                    self._volume_im = np.load(self.im_path)
+                else:
+                    with h5py.File(self.im_path, "r") as f_im:
+                        self._volume_im = f_im[self.dataset_key][:]
+            else:
+                self._volume_im = np.zeros(self.im_shape, dtype=self.im_dtype)
+
         if self.seg_path is not None and self._volume_seg is None:
-            with h5py.File(self.seg_path, "r") as f_seg:
-                self._volume_seg = f_seg[self.dataset_key][:]
+            if self.seg_path.endswith(".npy"):
+                self._volume_seg = np.load(self.seg_path)
+            else:
+                with h5py.File(self.seg_path, "r") as f_seg:
+                    self._volume_seg = f_seg[self.dataset_key][:]
         return self
 
     def clear_cache(self) -> None:
@@ -156,14 +196,26 @@ class HDF5View:
             seg_slice = self._volume_seg[:, :, slice_idx, :] if self._volume_seg is not None else None
             return im_slice, seg_slice
 
-        # Directly from HDF5 file
-        with h5py.File(self.im_path, "r") as f_im:
-            im_slice = f_im[self.dataset_key][:, :, slice_idx]
+        # Read image slice
+        if self.im_path is not None:
+            if self.im_path.endswith(".npy"):
+                im_mmap = np.load(self.im_path, mmap_mode="r")
+                im_slice = np.array(im_mmap[:, :, slice_idx])
+            else:
+                with h5py.File(self.im_path, "r") as f_im:
+                    im_slice = f_im[self.dataset_key][:, :, slice_idx]
+        else:
+            im_slice = np.zeros(self.im_shape[:2], dtype=self.im_dtype)
 
+        # Read segmentation slice
         seg_slice = None
         if self.seg_path is not None:
-            with h5py.File(self.seg_path, "r") as f_seg:
-                seg_slice = f_seg[self.dataset_key][:, :, slice_idx, :]
+            if self.seg_path.endswith(".npy"):
+                seg_mmap = np.load(self.seg_path, mmap_mode="r")
+                seg_slice = np.array(seg_mmap[:, :, slice_idx, :])
+            else:
+                with h5py.File(self.seg_path, "r") as f_seg:
+                    seg_slice = f_seg[self.dataset_key][:, :, slice_idx, :]
 
         return im_slice, seg_slice
 
@@ -189,6 +241,21 @@ class HDF5View:
         Returns:
             RGB float32 numpy array with shape (H, W, 3) in [0.0, 1.0].
         """
+        if not self.has_image:
+            rgb = np.zeros((*seg_slice.shape[:2], 3), dtype=np.float32) if seg_slice is not None else np.zeros((*im_slice.shape, 3), dtype=np.float32)
+            if seg_slice is None:
+                return rgb
+            channels_to_plot = selected_channels if selected_channels is not None else list(range(seg_slice.shape[-1]))
+            for c in channels_to_plot:
+                if c >= seg_slice.shape[-1]:
+                    continue
+                mask = seg_slice[:, :, c] > 0
+                if np.any(mask):
+                    color = self.channel_colors[c % len(self.channel_colors)]
+                    for ch in range(3):
+                        rgb[mask, ch] = color[ch]
+            return np.clip(rgb, 0.0, 1.0)
+
         im_min, im_max = float(im_slice.min()), float(im_slice.max())
         im_norm = (im_slice - im_min) / (im_max - im_min + 1e-8)
         rgb = np.stack([im_norm] * 3, axis=-1).astype(np.float32)
@@ -218,11 +285,11 @@ class HDF5View:
         slice_idx: int = 75,
         alpha: float = 0.5,
         show_channels: bool = True,
-        figsize: Tuple[int, int] = (16, 8),
+        figsize: Optional[Tuple[int, int]] = None,
     ) -> plt.Figure:
         """Plot a static multi-panel view for a given slice:
 
-        1. Grayscale MRI slice.
+        1. Grayscale MRI slice or Mask Overview map.
         2. Composite color overlay.
         3. Individual channel subplots (if segmentation is present and show_channels=True).
 
@@ -230,7 +297,7 @@ class HDF5View:
             slice_idx: Slice index (0 to num_slices - 1).
             alpha: Mask opacity for the overlay.
             show_channels: Whether to display individual channel panels.
-            figsize: Figure size tuple (width, height).
+            figsize: Optional figure size tuple (width, height).
 
         Returns:
             The matplotlib Figure object.
@@ -238,12 +305,17 @@ class HDF5View:
         im_slice, seg_slice = self.get_slice(slice_idx)
 
         if seg_slice is None or not show_channels:
-            fig, axes = plt.subplots(1, 2 if seg_slice is not None else 1, figsize=(10, 5))
+            fig, axes = plt.subplots(1, 2 if seg_slice is not None else 1, figsize=figsize or (10, 5))
             if not isinstance(axes, np.ndarray):
                 axes = np.array([axes])
 
-            axes[0].imshow(im_slice, cmap="gray")
-            axes[0].set_title(f"MRI Slice (z={slice_idx})")
+            if self.has_image:
+                axes[0].imshow(im_slice, cmap="gray")
+                axes[0].set_title(f"MRI Slice (z={slice_idx})")
+            else:
+                overview = np.any(seg_slice > 0, axis=-1).astype(np.float32) if seg_slice is not None else im_slice
+                axes[0].imshow(overview, cmap="bone")
+                axes[0].set_title(f"Mask Overview (z={slice_idx})")
             axes[0].axis("off")
 
             if seg_slice is not None:
@@ -255,32 +327,44 @@ class HDF5View:
             plt.tight_layout()
             return fig
 
-        # Multi-panel grid: 2 rows x 4 columns
-        fig = plt.figure(figsize=figsize)
+        num_c = seg_slice.shape[-1]
+        cols = 4 if num_c >= 5 else 3
+        rows = 2
+        default_figsize = (16, 8) if cols == 4 else (13, 8)
+        fig = plt.figure(figsize=figsize or default_figsize)
 
-        # 1. Grayscale MRI
-        ax1 = plt.subplot(2, 4, 1)
-        ax1.imshow(im_slice, cmap="gray")
-        ax1.set_title(f"MRI Slice (z={slice_idx})", fontsize=12)
+        # 1. Grayscale MRI or Binary Mask Overview
+        ax1 = plt.subplot(rows, cols, 1)
+        if self.has_image:
+            ax1.imshow(im_slice, cmap="gray")
+            ax1.set_title(f"MRI Slice (z={slice_idx})", fontsize=12)
+        else:
+            overview = np.any(seg_slice > 0, axis=-1).astype(np.float32)
+            ax1.imshow(overview, cmap="bone")
+            total_active = int(np.sum(seg_slice > 0))
+            ax1.set_title(f"Mask Overview (z={slice_idx})\n{total_active} total px", fontsize=11)
         ax1.axis("off")
 
         # 2. Composite Overlay
-        ax2 = plt.subplot(2, 4, 2)
+        ax2 = plt.subplot(rows, cols, 2)
         overlay = self.create_overlay(im_slice, seg_slice, alpha=alpha)
         ax2.imshow(overlay)
         ax2.set_title("Composite Overlay", fontsize=12)
         ax2.axis("off")
 
-        # 3-8. Individual channels
-        num_c = seg_slice.shape[-1]
+        # 3 to (num_c + 2). Individual channels
         for c in range(min(num_c, 6)):
-            ax = plt.subplot(2, 4, c + 3)
-            ax.imshow(im_slice, cmap="gray")
+            ax = plt.subplot(rows, cols, c + 3)
+            if self.has_image:
+                ax.imshow(im_slice, cmap="gray")
+            else:
+                ax.imshow(np.zeros_like(im_slice), cmap="gray", vmin=0, vmax=1)
+
             mask = seg_slice[:, :, c]
             if np.any(mask):
                 color_mask = np.zeros((*mask.shape, 4), dtype=np.float32)
                 color = self.channel_colors[c % len(self.channel_colors)]
-                color_mask[mask > 0] = [*color, 0.7]
+                color_mask[mask > 0] = [*color, 0.7 if self.has_image else 0.9]
                 ax.imshow(color_mask)
                 status = f"({np.sum(mask)} px)"
             else:
@@ -384,7 +468,18 @@ class HDF5View:
         Returns:
             The matplotlib Figure object.
         """
-        vol = self.volume_im
+        if self.has_image:
+            vol = self.volume_im
+            cmap = "gray"
+        else:
+            # Create a 3D label projection across channels for segmentation reslicing
+            seg_vol = self.volume_seg
+            assert seg_vol is not None
+            vol = np.zeros(self.im_shape, dtype=np.float32)
+            for c in range(self.num_channels):
+                vol[seg_vol[:, :, :, c] > 0] = (c + 1) / max(self.num_channels, 1)
+            cmap = "inferno"
+
         h, w, d = vol.shape
 
         sag_idx = sag_idx if sag_idx is not None else d // 2
@@ -396,15 +491,15 @@ class HDF5View:
         axial = vol[ax_idx, :, :].T
 
         fig, axes = plt.subplots(1, 3, figsize=figsize)
-        axes[0].imshow(sagittal, cmap="gray")
+        axes[0].imshow(sagittal, cmap=cmap)
         axes[0].set_title(f"Sagittal View (Slice z={sag_idx})")
         axes[0].axis("off")
 
-        axes[1].imshow(coronal, cmap="gray", aspect=sagittal.shape[0] / coronal.shape[0])
+        axes[1].imshow(coronal, cmap=cmap, aspect=sagittal.shape[0] / coronal.shape[0])
         axes[1].set_title(f"Coronal Reslice (y={cor_idx})")
         axes[1].axis("off")
 
-        axes[2].imshow(axial, cmap="gray", aspect=sagittal.shape[1] / axial.shape[0])
+        axes[2].imshow(axial, cmap=cmap, aspect=sagittal.shape[1] / axial.shape[0])
         axes[2].set_title(f"Axial Reslice (x={ax_idx})")
         axes[2].axis("off")
 
@@ -415,25 +510,31 @@ class HDF5View:
     # Utilities & Static Methods
     # -------------------------------------------------------------------------
 
-    def info(self) -> Dict[str, Union[str, Tuple[int, ...], int]]:
+    def info(self) -> Dict[str, Union[str, Tuple[int, ...], int, bool]]:
         """Return a dictionary summarizing the dataset specifications."""
-        summary: Dict[str, Union[str, Tuple[int, ...], int]] = {
-            "image_file": os.path.basename(self.im_path),
-            "image_shape": self.im_shape,
-            "image_dtype": str(self.im_dtype),
+        summary: Dict[str, Union[str, Tuple[int, ...], int, bool]] = {
             "num_slices": self.num_slices,
+            "has_image": self.has_image,
             "has_segmentation": self.seg_path is not None,
         }
+        if self.has_image and self.im_path is not None:
+            summary["image_file"] = os.path.basename(self.im_path)
+            summary["image_shape"] = self.im_shape
+            summary["image_dtype"] = str(self.im_dtype)
+
         if self.seg_path is not None and self.seg_shape is not None:
             summary["seg_file"] = os.path.basename(self.seg_path)
+            summary["seg_format"] = "NPY" if self.seg_path.endswith(".npy") else "HDF5"
             summary["seg_shape"] = self.seg_shape
             summary["seg_dtype"] = str(self.seg_dtype)
             summary["num_channels"] = self.num_channels
+
         return summary
 
     def __repr__(self) -> str:
+        im_str = f"im_shape={self.im_shape}" if self.has_image else f"seg_file={os.path.basename(self.seg_path or '')}"
         seg_str = f", seg_shape={self.seg_shape}" if self.seg_path else ""
-        return f"<HDF5View: im_shape={self.im_shape}{seg_str}, slices={self.num_slices}>"
+        return f"<HDF5View: {im_str}{seg_str}, slices={self.num_slices}>"
 
     @classmethod
     def find_pairs(cls, data_dir: str) -> List[Tuple[str, str]]:
@@ -449,7 +550,7 @@ class HDF5View:
         """
         all_im = [
             f for f in glob(os.path.join(data_dir, "**", "*.im"), recursive=True)
-            if not os.path.basename(f).startswith("._")
+            if not os.path.basename(f).startswith("._") and "__MACOSX" not in f
         ]
         pairs = []
         for im in sorted(all_im):
@@ -459,22 +560,85 @@ class HDF5View:
                 pairs.append((im, seg))
         return pairs
 
+    @classmethod
+    def find_ground_truth(cls, data_dir: str) -> List[str]:
+        """Search a directory recursively for ground truth .npy segmentation files.
 
-# Alias for convenience
+        Filters out AppleDouble metadata files (._*) and __MACOSX directories.
+
+        Args:
+            data_dir: Path to directory containing ground truth .npy files.
+
+        Returns:
+            Sorted list of paths to valid .npy files.
+        """
+        candidate_paths = [
+            os.path.join(data_dir, "ground-truth_shifted"),
+            os.path.join(data_dir, "test-ground-truth-shifted"),
+            data_dir,
+        ]
+        search_dir = next((p for p in candidate_paths if os.path.isdir(p)), data_dir)
+
+        all_npy = [
+            f for f in glob(os.path.join(search_dir, "**", "*.npy"), recursive=True)
+            if not os.path.basename(f).startswith("._") and "__MACOSX" not in f
+        ]
+        return sorted(all_npy)
+
+    @classmethod
+    def from_npy(
+        cls,
+        npy_path: str,
+        im_path: Optional[str] = None,
+        **kwargs,
+    ) -> HDF5View:
+        """Factory method to instantiate a viewer from a ground truth .npy segmentation mask."""
+        return cls(im_path=im_path, seg_path=npy_path, **kwargs)
+
+
+class GroundTruthView(HDF5View):
+    """Convenience viewer specialized for ground truth segmentation masks (.npy or .seg)."""
+
+    def __init__(
+        self,
+        seg_path: Optional[str] = None,
+        im_path: Optional[str] = None,
+        npy_or_seg_path: Optional[str] = None,
+        **kwargs,
+    ) -> None:
+        target_seg = npy_or_seg_path or seg_path
+        super().__init__(im_path=im_path, seg_path=target_seg, **kwargs)
+
+
+# Aliases for convenience
 HDF5Viewer = HDF5View
+NPYView = GroundTruthView
+
+__all__ = ["HDF5View", "HDF5Viewer", "GroundTruthView", "NPYView"]
 
 
 if __name__ == "__main__":
     import sys
 
     # Quick test if run directly
-    sample_dir = "data/train-shifted/train-shifted"
+    sample_dir = "data/train-shifted"
     if not os.path.isdir(sample_dir):
-        sample_dir = "../data/train-shifted/train-shifted"
+        sample_dir = "../data/train-shifted"
 
     pairs = HDF5View.find_pairs(sample_dir)
     print(f"Found {len(pairs)} matching (.im, .seg) pairs in {sample_dir}")
     if pairs:
         viewer = HDF5View(pairs[0][0], pairs[0][1])
-        print("Initialized viewer:", viewer)
+        print("Initialized HDF5 viewer:", viewer)
         print("Summary info:", viewer.info())
+
+    # Test ground truth discovery
+    gt_dir = "data/ground-truth_shifted"
+    if not os.path.isdir(gt_dir):
+        gt_dir = "../data/ground-truth_shifted"
+    gt_files = HDF5View.find_ground_truth(gt_dir)
+    print(f"\nFound {len(gt_files)} ground truth .npy files in {gt_dir}")
+    if gt_files:
+        gt_viewer = HDF5View.from_npy(gt_files[0])
+        print("Initialized Ground Truth viewer:", gt_viewer)
+        print("Ground Truth info:", gt_viewer.info())
